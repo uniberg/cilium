@@ -372,16 +372,16 @@ same common set of BPF helper functions in order to perform lookup, update or
 delete operations while implementing a different backend with differing semantics
 and performance characteristics.
 
-Non-generic maps currently in the kernel:
-
-* ``BPF_MAP_TYPE_PROG_ARRAY``
-* ``BPF_MAP_TYPE_PERF_EVENT_ARRAY``
-* ``BPF_MAP_TYPE_CGROUP_ARRAY``
-* ``BPF_MAP_TYPE_STACK_TRACE``
-* ``BPF_MAP_TYPE_ARRAY_OF_MAPS``
-* ``BPF_MAP_TYPE_HASH_OF_MAPS``
-
-TODO: further coverage of maps and their purpose
+Non-generic maps that are currently in the kernel are ``BPF_MAP_TYPE_PROG_ARRAY``,
+``BPF_MAP_TYPE_PERF_EVENT_ARRAY``, ``BPF_MAP_TYPE_CGROUP_ARRAY``,
+``BPF_MAP_TYPE_STACK_TRACE``, ``BPF_MAP_TYPE_ARRAY_OF_MAPS``,
+``BPF_MAP_TYPE_HASH_OF_MAPS``. For example, ``BPF_MAP_TYPE_PROG_ARRAY`` is an
+array map which holds other BPF programs, ``BPF_MAP_TYPE_ARRAY_OF_MAPS`` and
+``BPF_MAP_TYPE_HASH_OF_MAPS`` both hold pointers to other maps such that entire
+BPF maps can be atomically replaced at runtime. These types of maps tackle a
+specific issue which was unsuitable to be implemented solely through a BPF helper
+functions since additional (non-data) state is required to be held across BPF
+program invocation.
 
 Object Pinning
 --------------
@@ -3320,12 +3320,6 @@ the following lists native and offloaded XDP drivers as of kernel 4.17.
 
 ..
 
-* **Solarflare**
-
-  * sfc [1]_
-
-..
-
 * **Others**
 
   * tun
@@ -3336,6 +3330,12 @@ the following lists native and offloaded XDP drivers as of kernel 4.17.
 * **Qlogic**
 
   * qede
+
+..
+
+* **Solarflare**
+
+  * sfc [1]_
 
 **Drivers supporting offloaded XDP**
 
@@ -3354,7 +3354,325 @@ the toolchain section under the respective tools.
 tc (traffic control)
 --------------------
 
-TODO
+Aside from other program types such as XDP, BPF can also be used out of the
+kernel's tc (traffic control) layer in the networking data path. On a high-level
+there are three major differences when comparing BPF XDP programs to tc BPF
+ones:
+
+* The BPF input context is a ``sk_buff`` not a ``xdp_buff``. The former is
+  the network packet representation of the kernel's networking stack and
+  therefore used in many places. As such it has all the relevant ``sk_buff``
+  metadata available the BPF program can read and write into, whereas in
+  ``xdp_buff`` case it's limited due to the early stage processing where the
+  cost of allocating a ``sk_buff`` is avoided altogether.
+
+  Out of the tc BPF hooks, the BPF program can for instance read or write
+  the skb's ``mark``, ``pkt_type``, ``protocol``, ``priority``, ``queue_mapping``,
+  ``napi_id``, ``cb[]`` array, ``hash``, ``tc_classid`` or ``tc_index``, vlan
+  metadata, the XDP transferred custom metadata and various other information.
+
+  The ``sk_buff`` is of a completely different nature than ``xdp_buff`` where
+  both come with advantages and disadvantages. For example, the ``sk_buff``
+  case has the advantage that it is rather straight forward to mangle its
+  associated metadata, however the kernel's ``sk_buff`` contains a lot of
+  protocol specific information which makes it difficult to simply switch
+  protocols by just rewriting the packet data. Thus, additional conversion
+  is required from BPF helper function taking care that ``sk_buff`` internals
+  are properly converted as well. The ``xdp_buff`` case however does not
+  face such issues since it comes at such an early stage where the kernel
+  has not even allocated an ``sk_buff`` yet, thus packet rewrites of any
+  kind can be realized trivially. However, the ``xdp_buff`` case has the
+  disadvantage that ``sk_buff`` metadata is not available for mangling
+  at this time. Both program types can therefore be operated complementary
+  to overcome each limitation when required from the use case.
+
+..
+
+* The tc BPF programs do not require any driver changes since they are run
+  at hook points in generic layers in the networking stack. Therefore, they
+  can be attached to any type of networking device.
+
+  While this provides flexibility, it also trades off performance compared
+  to running at the native XDP layer. However, tc BPF programs still come
+  at the earliest point in the generic kernel's networking data path after
+  GRO has been run but before any protocol processing, traditional iptables
+  firewalling such as iptables PREROUTING or nftables ingress hooks or other
+  packet processing takes place. Likewise on egress, at the latest point
+  before handing the packet to the driver itself for transmission, meaning
+  after traditional iptables firewalling hooks like iptables POSTROUTING, but
+  still before handing the packet to the kernel's GSO engine.
+
+  One exception which does require driver changes however are offloaded tc
+  BPF programs, typically provided by SmartNICs in a similar way as offloaded
+  XDP just with differing set of features due to the differences in the BPF
+  input context, helper functions and verdict codes.
+
+..
+
+* Compared to XDP, tc BPF programs can be triggered out of ingress and also
+  egress points in the networking data path as opposed to ingress only in case
+  of XDP.
+
+  The two hook points ``sch_handle_ingress()`` and ``sch_handle_egress()`` in
+  the kernel are triggered out of ``__netif_receive_skb_core()`` and
+  ``__dev_queue_xmit()``, respectively. The latter two are the main receive
+  and transmit functions in the data path that, taking XDP aside, are triggered
+  for every network packet going in or coming out of the node allowing for
+  full visibility for tc BPF programs at these hook points.
+
+..
+
+When talking about tc BPF programs in this context, then those are BPF programs
+which are run from ``cls_bpf`` classifier. Albeit tc terminology, the name
+"classifier" is a bit misleading, since it underrepresents what ``cls_bpf``
+is capable of, that is, a fully programmable packet processor being able not
+only to read the ``skb`` metadata and paket data but to also arbitrarily
+mangle both and terminate the tc processing with an action verdict. ``cls_bpf``
+can thus be regarded as a self-contained entity managing and executing tc
+BPF programs.
+
+It can hold one or multiple tc BPF programs. In the case where Cilium deploys
+``cls_bpf`` programs, it attaches only a single program for a given hook in
+``direct-action`` mode. Typically, in the traditional tc scheme, there is a
+split between classifier and action modules, where the classifier has one
+or more actions attached to it that are triggered once the classifier has a
+match. In the modern world for using tc in the software data path this model
+does not scale well for complex packet processing. Given tc BPF programs
+attached to ``cls_bpf`` are fully self-contained, they effectively fuse the
+parsing and action process together into a single unit and therefore thanks
+to ``cls_bpf``'s ``direct-action`` mode will just return the tc action verdict
+and terminate the processing pipeline immediately which allows for implementing
+scaleable programmable packet processing in the networking data path. ``cls_bpf``
+is the only such "classifier" module in the tc layer capable of such fast-path.
+
+Like XDP BPF programs, tc BPF programs can be atomically updated at runtime
+via ``cls_bpf`` without interrupting any network traffic or having to restart
+services.
+
+Both the tc ingress but also egress hook where ``cls_bpf`` itself can be
+attached to is managed by a pseudo qdisc called ``sch_clsact``. The latter
+is a drop-in replacement and proper superset of the ingress qdisc since it
+is able to manage both, ingress and egress tc hooks. For tc's egress hook
+in ``__dev_queue_xmit()`` it is important to stress that it is not executed
+under the kernel's qdisc root lock. Thus, both tc ingress and egress hooks
+are executed in a lockless manner in the fast-path. In either case, preemption
+is disabled and execution happens under RCU read side.
+
+Typically on egress there are qdiscs attached to netdevices such as ``sch_mq``,
+``sch_fq``, ``sch_fq_codel`` or ``sch_htb`` where some of them are classful
+qdiscs that contain subclasses and thus require a packet classification
+mechanism to determine a verdict where to demux the packet. This is handled
+by a call to ``tcf_classify()`` which calls into tc classifiers if present.
+``cls_bpf`` can also be attached and used in such cases. Such operation usually
+happens under the qdisc root lock and can be subject to lock contention. The
+``sch_clsact`` qdisc's egress hook comes at a much earlier point however which
+does not fall under that and operates completely independent from conventional
+egress qdiscs. Thus for cases like ``sch_htb`` the ``sch_clsact`` qdisc could
+perform the heavy lifting packet classification through tc BPF outside of the
+qdisc root lock, setting the ``skb->mark`` or ``skb->priority`` from there such
+that ``sch_htb`` only requires a flat mapping without expensive packet
+classification under the root lock thus reducing contention.
+
+Offloaded tc BPF programs are supported for the case of ``sch_clsact`` in
+combination with ``cls_bpf`` where the prior loaded BPF program was JITed
+from a SmartNIC driver to be run natively on the NIC. Only ``cls_bpf``
+programs operating in ``direct-action`` mode are supported to be offloaded.
+``cls_bpf`` can also only be offloaded in the single program case and does
+not work for multiple programs, and furthermore only the ingress hook is
+supported to be offloaded.
+
+One ``cls_bpf`` instance is able to hold multiple tc BPF programs internally.
+If this is the case, then the ``TC_ACT_UNSPEC`` program return code will
+continue execution with the next tc BPF program in that list. However, this
+has the drawback that several programs would need to parse the packet over
+and over again resulting in degraded performance.
+
+**BPF program return codes**
+
+Both the tc ingress and egress hook share the same action return verdicts
+that tc BPF programs can use. They are defined in the ``linux/pkt_cls.h``
+system header:
+
+::
+
+    #define TC_ACT_UNSPEC         (-1)
+    #define TC_ACT_OK               0
+    #define TC_ACT_SHOT             2
+    #define TC_ACT_STOLEN           4
+    #define TC_ACT_REDIRECT         7
+
+There are a few more action ``TC_ACT_*`` verdicts available in the system
+header file which are also used in the two hooks. However, they share the
+same semantics with the ones above. Meaning, from a tc BPF persepective,
+``TC_ACT_OK`` and ``TC_ACT_RECLASSIFY`` have the same semantics, as well as
+the three ``TC_ACT_STOLEN``, ``TC_ACT_QUEUED`` and ``TC_ACT_TRAP`` opcodes.
+Therefore, for these cases we only describe ``TC_ACT_OK`` and the ``TC_ACT_STOLEN``
+opcode for the two groups.
+
+Starting out with ``TC_ACT_UNSPEC``. It has the meaning of "unspecified action"
+and is used in three cases, i) when an offloaded tc BPF program is attached
+and the tc ingress hook is run where the ``cls_bpf`` representation for the
+offloaded program will return ``TC_ACT_UNSPEC``, ii) in order to continue
+with the next tc BPF program in ``cls_bpf`` for the multi-program case. The
+latter also works in combination with offloaded tc BPF programs from point i)
+where the ``TC_ACT_UNSPEC`` from there continues with a next tc BPF program
+solely running in non-offloaded case. Last but not least, iii) ``TC_ACT_UNSPEC``
+is also used for the single program case to simply tell the kernel to continue
+with the ``skb`` without additional side-effects. ``TC_ACT_UNSPEC`` is very
+similar to the ``TC_ACT_OK`` action code in the sense that both pass the
+``skb`` onwards either to upper layers of the stack on ingress or down to
+the networking device driver for transmission on egress, respectively. The
+only difference to ``TC_ACT_OK`` is that ``TC_ACT_OK`` sets ``skb->tc_index``
+based on the classid the tc BPF program set. The latter is set out of the
+tc BPF program itself through ``skb->tc_classid`` from the BPF context.
+
+``TC_ACT_SHOT`` instructs the kernel to drop the packet, meaning, upper
+layers of the networking stack will never see the ``skb`` on ingress and
+similarly the packet will never be submitted for transmission on egress.
+``TC_ACT_SHOT`` and ``TC_ACT_STOLEN`` are both similar in nature with few
+differences: ``TC_ACT_SHOT`` will indicate to the kernel that the ``skb``
+was released through ``kfree_skb()`` and return ``NET_XMIT_DROP`` to the
+callers for immediate feedback, whereas ``TC_ACT_STOLEN`` will release
+the ``skb`` through ``consume_skb()`` and pretend to upper layers that
+the transmission was successful through ``NET_XMIT_SUCCESS``. The perf's
+drop monitor which records traces of ``kfree_skb()`` will therefore
+also not see any drop indications from ``TC_ACT_STOLEN`` since its
+semantics are such that the ``skb`` has been "consumed" or queued but
+certainly not "dropped".
+
+Last but not least the ``TC_ACT_REDIRECT`` action which is available for
+tc BPF programs as well. This allows to redirect the ``skb`` to the same
+or another's device ingress or egress path together with the ``bpf_redirect()``
+helper. Being able to inject the packet into another device's ingress or
+egress direction allows for full flexibility in packet forwarding with
+BPF. There are no requirements on the target networking device other than
+being a networking device itself, there is no need to run another instance
+of ``cls_bpf`` on the target device or other such restrictions.
+
+**tc BPF FAQ**
+
+This section contains a few miscellaneous question and answer pairs related to
+tc BPF programs that are asked from time to time.
+
+* **Question:** What about ``act_bpf`` as a tc action module, is it still relevant?
+* **Answer:** Not really. Although ``cls_bpf`` and ``act_bpf`` share the same
+  functionality for tc BPF programs, ``cls_bpf`` is more flexible since it is a
+  proper superset of ``act_bpf``. The way tc works is that tc actions need to be
+  attached to tc classifiers. In order to achieve the same flexibility as ``cls_bpf``,
+  ``act_bpf`` would need to be attached to the ``cls_matchall`` classifier. As the
+  name says, this will match on every packet in order to pass them through for attached
+  tc action processing. For ``act_bpf``, this is will result in less efficient packet
+  processing than using ``cls_bpf`` in ``direct-action`` mode directly. If ``act_bpf``
+  is used in a setting with other classifiers than ``cls_bpf`` or ``cls_matchall``
+  then this will perform even worse due to the nature of operation of tc classifiers.
+  Meaning, if classifier A has a mismatch, then the packet is passed to classifier
+  B, reparsing the packet, etc, thus in the typical case there will be linear
+  processing where the packet would need to traverse N classifiers in the worst
+  case to find a match and execute ``act_bpf`` on that. Therefore, ``act_bpf`` has
+  become largely unrelevant. Additionally, ``act_bpf`` does not provide a tc
+  offloading interface either.
+
+..
+
+* **Question:** Is it recommended to use ``cls_bpf`` not in ``direct-action`` mode?
+* **Answer:** No. The answer is similar to the one above in that this is otherwise
+  unable to scale for more complex processing. tc BPF can already do everything needed
+  by itself in an efficient manner and thus there is no need for anything other than
+  ``direct-action`` mode.
+
+..
+
+* **Question:** Is there any performance difference in offloaded ``cls_bpf`` and
+  offloaded XDP?
+* **Answer:** No. Both are JITed through the same compiler in the kernel which
+  handles the offloading to the SmartNIC and the loading mechanism for both is
+  very similar as well. Thus, the BPF program gets translated into the same target
+  instruction set in order to be able to run on the NIC natively. The two tc BPF
+  and XDP BPF program types have a differing set of features, so depending on the
+  use case one might be picked over the other due to availability of certain helper
+  functions in the offload case, for example.
+
+**Use cases for tc BPF**
+
+Some of the main use cases for tc BPF programs are presented in this subsection.
+Also here, the list is non-exhaustive and given the programmability and efficiency
+of tc BPF, it can easily be tailored to solve very specific use cases. While some
+use cases with XDP may overlap, tc BPF and XDP BPF are mostly complementary to
+each other and both can also be used at the same time or one over the other
+depending which is most suitable for a given problem to solve.
+
+* **Policy enforcement for containers**
+
+  One application which tc BPF programs are suitable for is to implement policy
+  enforcement, custom firewalling or similar security measures for containers or
+  pods, respectively. In the conventional case, container isolation is implemented
+  through network namespaces with veth networking devices connecting the hosts'
+  initial namespace with the dedicated container's namespace. Since one end of
+  the veth pair has been moved into the container's namespace whereas the other
+  end remains in the initial namespace of the host, all network traffic from the
+  container has to pass through the host-facing veth device allowing for attaching
+  tc BPF programs on the tc ingress and egress hook of the veth. Network traffic
+  going into the container will pass through the host-facing veth's tc egress
+  hook whereas network traffic coming from the container will pass through the
+  host-facing veth's tc ingress hook.
+
+  For virtual devices like veth devices XDP is unsuitable in this case since the
+  kernel operates solely on a ``skb`` here and generic XDP has a few limitations
+  where it does not operate with cloned ``skb``'s. The latter is heavily used
+  from the TCP/IP stack in order to hold data segments for retransmission where
+  the generic XDP hook would simply get bypassed instead. Moreover, generic XDP
+  needs to linearize the entire ``skb`` resulting in heavily degraded performance.
+  tc BPF on the other hand is more flexible as it specializes on the ``skb``
+  input context case and thus does not need to cope with the limitations from
+  generic XDP.
+
+..
+
+* **Forwarding and load-balancing**
+
+
+
+..
+
+* **Flow sampling, monitoring**
+
+  Like in XDP case, flow sampling and monitoring can be realized through a
+  high-performance lockless per-CPU memory mapped perf ring buffer where the
+  BPF program is able to push custom data, the full or truncated packet
+  contents or both up to a user space application. From the tc BPF program
+  this is realized through the ``bpf_skb_event_output()`` BPF helper function
+  which has the same function signature and semantics as ``bpf_xdp_event_output()``.
+  Given tc BPF programs can be attached to ingress and egress as opposed to
+  only ingress in XDP BPF case plus the two tc hooks are at the lowest layer
+  in the (generic) networking stack, this allows for bidirectional monitoring
+  of all network traffic coming in and out of a particular node.
+
+..
+
+* **Packet scheduler pre-processing**
+
+
+
+..
+
+Cilium use-case
+
+
+* Slides: https://www.slideshare.net/ThomasGraf5/dockercon-2017-cilium-network-and-application-security-with-bpf-and-xdp
+* Video: https://youtu.be/ilKlmTDdFgk
+
+**Driver support**
+
+Since tc BPF programs are triggered from the kernel's networking stack
+and not directly out of the driver, they do not require any extra driver
+modification and therefore can run on any networking device. The only
+exception listed below is for offloading tc BPF programs to the NIC.
+
+**Drivers supporting offloaded tc BPF**
+
+* **Netronome**
+
+  * nfp [2]_
 
 .. _bpf_users:
 
@@ -4153,6 +4471,7 @@ Further Documents
 - Dive into BPF: a list of reading material,
   Quentin Monnet
   (https://qmonnet.github.io/whirl-offload/2016/09/01/dive-into-bpf/)
+
 - XDP - eXpress Data Path,
   Jesper Dangaard Brouer
   (https://prototype-kernel.readthedocs.io/en/latest/networking/XDP/index.html)
