@@ -311,7 +311,7 @@ func (ds *PolicyTestSuite) TestWildcardL3RulesIngress(c *C) {
 	selBar1 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar1"))
 	selBar2 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar2"))
 
-	labelsL3 := labels.LabelArray{labels.ParseLabel("l3")}
+	labelsL3 := labels.LabelArray{labels.ParseLabel("L3")}
 	labelsKafka := labels.LabelArray{labels.ParseLabel("kafka")}
 	labelsHTTP := labels.LabelArray{labels.ParseLabel("http")}
 
@@ -429,7 +429,7 @@ func (ds *PolicyTestSuite) TestWildcardL4RulesIngress(c *C) {
 	selBar1 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar1"))
 	selBar2 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar2"))
 
-	labelsL3 := labels.LabelArray{labels.ParseLabel("l3")}
+	labelsL3 := labels.LabelArray{labels.ParseLabel("L3")}
 	labelsKafka := labels.LabelArray{labels.ParseLabel("kafka")}
 	labelsHTTP := labels.LabelArray{labels.ParseLabel("http")}
 
@@ -570,7 +570,7 @@ func (ds *PolicyTestSuite) TestWildcardL3RulesEgress(c *C) {
 	selBar1 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar1"))
 	selBar2 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar2"))
 
-	labelsL3 := labels.LabelArray{labels.ParseLabel("l3")}
+	labelsL3 := labels.LabelArray{labels.ParseLabel("L3")}
 	labelsKafka := labels.LabelArray{labels.ParseLabel("kafka")}
 	labelsHTTP := labels.LabelArray{labels.ParseLabel("http")}
 
@@ -688,7 +688,7 @@ func (ds *PolicyTestSuite) TestWildcardL4RulesEgress(c *C) {
 	selBar1 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar1"))
 	selBar2 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar2"))
 
-	labelsL3 := labels.LabelArray{labels.ParseLabel("l3")}
+	labelsL3 := labels.LabelArray{labels.ParseLabel("L3")}
 	labelsKafka := labels.LabelArray{labels.ParseLabel("kafka")}
 	labelsHTTP := labels.LabelArray{labels.ParseLabel("http")}
 
@@ -828,7 +828,7 @@ func (ds *PolicyTestSuite) TestWildcardL3RulesIngressFromEntities(c *C) {
 	selFoo := api.NewESFromLabels(labels.ParseSelectLabel("id=foo"))
 	selBar2 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar2"))
 
-	labelsL3 := labels.LabelArray{labels.ParseLabel("l3")}
+	labelsL3 := labels.LabelArray{labels.ParseLabel("L3")}
 	labelsKafka := labels.LabelArray{labels.ParseLabel("kafka")}
 	labelsHTTP := labels.LabelArray{labels.ParseLabel("http")}
 
@@ -950,7 +950,7 @@ func (ds *PolicyTestSuite) TestWildcardL3RulesEgressToEntities(c *C) {
 	selFoo := api.NewESFromLabels(labels.ParseSelectLabel("id=foo"))
 	selBar2 := api.NewESFromLabels(labels.ParseSelectLabel("id=bar2"))
 
-	labelsL3 := labels.LabelArray{labels.ParseLabel("l3")}
+	labelsL3 := labels.LabelArray{labels.ParseLabel("L3")}
 	labelsKafka := labels.LabelArray{labels.ParseLabel("kafka")}
 	labelsHTTP := labels.LabelArray{labels.ParseLabel("http")}
 
