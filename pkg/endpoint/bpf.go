@@ -18,7 +18,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
@@ -326,6 +329,17 @@ func (e *Endpoint) writeHeaderfile(prefix string, owner Owner) error {
 	}
 
 	return fw.Flush()
+}
+
+// hashHeaderfile returns the MD5 hash of the BPF headerfile with the given prefix.
+func (e *Endpoint) hashHeaderfile(prefix string) (string, error) {
+	headerPath := filepath.Join(prefix, common.CHeaderFileName)
+	bytes, err := ioutil.ReadFile(headerPath)
+	if err != nil {
+		return "", err
+	}
+	hash := md5.Sum(bytes)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 // FIXME: Clean this function up
@@ -731,8 +745,18 @@ func (e *Endpoint) regenerateBPF(owner Owner, epdir, reason string) (uint64, err
 	// BPF programs for this endpoint.
 	if err = e.writeHeaderfile(epdir, owner); err != nil {
 		e.Mutex.Unlock()
-		return 0, fmt.Errorf("Unable to write header file: %s", err)
+		return 0, fmt.Errorf("unable to write header file: %s", err)
 	}
+
+	// Avoid BPF program compilation and installation if the headerfile hasn't changed.
+	bpfHeaderfileHash, err := e.hashHeaderfile(epdir)
+	if err != nil {
+		e.Mutex.Unlock()
+		return 0, fmt.Errorf("unable to hash header file: %s", err)
+	}
+	bpfHeaderfileChanged := (bpfHeaderfileHash != e.bpfHeaderfileHash)
+	e.getLogger().WithField(logfields.BPFHeaderfileHash, bpfHeaderfileHash).
+		Debugf("BPF header file hashed (was: %q)", e.bpfHeaderfileHash)
 
 	// Cache endpoint information
 	// TODO (ianvernon): why do we need to do this?
@@ -791,10 +815,18 @@ func (e *Endpoint) regenerateBPF(owner Owner, epdir, reason string) (uint64, err
 		return 0, fmt.Errorf("Error while configuring proxy redirects: %s", err)
 	}
 
-	// Compile and install BPF programs for this endpoint
-	err = e.runInit(libdir, rundir, epdir, epInfoCache.ifName, debug)
-	if err != nil {
-		return epInfoCache.revision, err
+	if bpfHeaderfileChanged {
+		// Compile and install BPF programs for this endpoint
+		err = e.runInit(libdir, rundir, epdir, epInfoCache.ifName, debug)
+		if err != nil {
+			return epInfoCache.revision, err
+		}
+		e.bpfHeaderfileHash = bpfHeaderfileHash
+	} else {
+		e.Mutex.RLock()
+		e.getLogger().WithField(logfields.BPFHeaderfileHash, bpfHeaderfileHash).
+			Debug("BPF header file unchanged, skipping BPF compilation and installation")
+		e.Mutex.RUnlock()
 	}
 
 	// To avoid traffic loss, wait for the policy to be pushed into BPF before
